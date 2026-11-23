@@ -4,7 +4,7 @@ description:
   Use when a JBrowse task involves a genome that already exists publicly —
   human, mouse, zebrafish, any UCSC or GenArk assembly — or when you are about
   to download and index a reference genome, look up a gene's coordinates, or
-  find an annotation track. Covers genomes.jbrowse.org: what is hosted, how to
+  find an annotation track. Covers genomes.jbrowse.org, what is hosted, how to
   discover trackIds, how to open one, and how to put your own file on top of it
   without authoring a config.
 ---
@@ -23,8 +23,8 @@ turn a two-minute task into an hour of bandwidth.
 
 One `config.json` carries the remote 2bit sequence, refName aliases (`1` /
 `chr1` / `NC_000001.11` all resolve), cytobands for the ideogram, the UCSC track
-catalog with a `trackId` each, and — for the UCSC databases — a text-search index
-that makes a **gene name** work as a location.
+catalog with a `trackId` each, and — for the UCSC databases — a text-search
+index that makes a **gene name** work as a location.
 
 GenArk assemblies carry sequence, aliases and their own smaller track set; not
 all ship a text index. Check for `aggregateTextSearchAdapters` before relying on
@@ -38,8 +38,15 @@ GenArk accession  https://jbrowse.org/hubs/genark/<GCA|GCF>/<3>/<3>/<3>/<accessi
 ```
 
 GenArk fans the first nine digits into three directories: `GCA_964188535.1` ->
-`.../genark/GCA/964/188/535/GCA_964188535.1/config.json`. Both are wrapped by the
-`--hub` flag below, so usually you name the assembly and never build the URL.
+`.../genark/GCA/964/188/535/GCA_964188535.1/config.json`. Both are wrapped by
+the `--genome` flag below, so usually you name the assembly and never build the
+URL.
+
+`https://jbrowse.org/ucsc/all.json` is every UCSC assembly in one config, with
+both directions of every pairwise liftOver. Reach for it when a session spans
+two genomes, since both assemblies are then already declared and neither has to
+be resolved at run time. It is a much bigger fetch, so use a per-assembly config
+otherwise.
 
 ## Find the assembly
 
@@ -59,10 +66,11 @@ curl -s https://genomes.jbrowse.org/searchIndex.json |
 # GCF_040938575.1   axolotl (Mex_15411 2024 refseq)  UKY_AmexF1_1
 ```
 
-The accession is the `--hub` name; the config URL follows from the scheme above.
-7.5 MB, so filter it with `jq` — do not read it into context. `source == "ucsc"`
-means a UCSC db exists for that row; prefer the db name, its track set is richer.
-`ncbiStatusBits & 1` marks NCBI's designated reference for the species.
+The accession is the `--genome` name; the config URL follows from the scheme
+above. 7.5 MB, so filter it with `jq` — do not read it into context.
+`source == "ucsc"` means a UCSC db exists for that row; prefer the db name, its
+track set is richer. `ncbiStatusBits & 1` marks NCBI's designated reference for
+the species.
 
 ## Find the track
 
@@ -86,17 +94,18 @@ one** — a trackId that does not exist opens nothing and reports nothing.
 
 ```bash
 ## a static image, no browser
-npx @jbrowse/img --hub hg38 --track hg38-ncbiRefSeqCurated --loc BRCA1 --width 1200 --out out.png
+npx @jbrowse/img --genome hg38 --track hg38-ncbiRefSeqCurated --loc BRCA1 --width 1200 --out out.png
 
 ## a link
-npx @jbrowse/capture url --hub hg38 --loc BRCA1 --track hg38-ncbiRefSeqCurated
+npx @jbrowse/capture url --genome hg38 --loc BRCA1 --track hg38-ncbiRefSeqCurated
 
 ## the real app, screenshotted once it has drawn
-npx @jbrowse/capture --hub hg38 --loc BRCA1 --track hg38-ncbiRefSeqCurated -o out.png
+npx @jbrowse/capture --genome hg38 --loc BRCA1 --track hg38-ncbiRefSeqCurated -o out.png
 ```
 
-The link is a plain `?config=<hub config URL>&assembly=<name>&loc=<where>&tracks=<ids>`
-against any JBrowse Web instance.
+The link is a plain
+`?config=<hub config URL>&assembly=<name>&loc=<where>&tracks=<ids>` against any
+JBrowse Web instance.
 
 Two behaviours to know, because both mislead:
 
@@ -108,8 +117,8 @@ Two behaviours to know, because both mislead:
 
 ## Your own file on top
 
-The pattern that removes the slow step: hosted assembly and annotation, your data
-as a session track, nothing written to disk.
+The pattern that removes the slow step: hosted assembly and annotation, your
+data as a session track, nothing written to disk.
 
 ```json
 {
@@ -137,7 +146,7 @@ as a session track, nothing written to disk.
 ```
 
 ```bash
-npx @jbrowse/capture --hub hg38 --session spec.json -o mine.png
+npx @jbrowse/capture --genome hg38 --spec spec.json -o mine.png
 ```
 
 `assemblyNames` names the hub's assembly; the view's `tracks` mixes a hosted id
@@ -151,13 +160,16 @@ public URL with CORS, or a local server. Pick the adapter type with
   patched or custom reference);
 - you need the data offline or pinned — these are other people's servers;
 - reliability matters and it matters more than setup time: the hub config lives
-  on jbrowse.org but many of its tracks resolve back to `hgdownload.soe.ucsc.edu`.
+  on jbrowse.org but many of its tracks resolve back to
+  `hgdownload.soe.ucsc.edu`.
 
 Then use `jbrowse add-assembly` — see the `jbrowse-authoring` skill.
 
 ## Reference
 
 - <https://jbrowse.org/jb2/docs/agents_hosted_data.md>
+- <https://jbrowse.org/jb2/docs/tutorials/genomes_basics/> — the click-path
+  version, for when a human has to drive it
 - <https://jbrowse.org/jb2/docs/urlparams.md> — every parameter, including
   `&sessionTracks=` and `&hubURL=`
 - <https://jbrowse.org/jb2/docs/jbrowse-img.md> — the static exporter

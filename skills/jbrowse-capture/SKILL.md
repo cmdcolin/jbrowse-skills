@@ -18,33 +18,72 @@ and then **read it**.
 
 ## Pick the tool
 
-| | `@jbrowse/img` | `@jbrowse/capture` |
-| --- | --- | --- |
-| how | server-side React, no browser | Puppeteer against a real instance |
-| output | SVG or PNG | PNG |
-| cost | fast | launches Chromium |
-| shows | the tracks | the whole app: chrome, menus, dialogs, ideogram |
-| covers | the SVG-export path | canvas / WebGPU rendering, as a user sees it |
+|        | `@jbrowse/img`                | `@jbrowse/capture`                              |
+| ------ | ----------------------------- | ----------------------------------------------- |
+| how    | server-side React, no browser | Puppeteer against a real instance               |
+| output | SVG, PNG or PDF               | PNG, JPEG or WebP                               |
+| cost   | fast                          | launches Chromium                               |
+| shows  | the tracks                    | the whole app: chrome, menus, dialogs, ideogram |
+| covers | the SVG-export path           | canvas / WebGPU rendering, as a user sees it    |
 
 Default to `@jbrowse/img`. Use `@jbrowse/capture` when the answer needs the real
 application: a canvas-rendered display, a view type the static exporter does not
 cover, a menu or dialog, or reading state back out of a running session.
 
+`@jbrowse/capture` spends agent turns as well as wall clock: a Chromium launch,
+then a page lifecycle whose readiness signals are negative-only and can be
+satisfied before the app has even started (see below) — a missed gate reruns the
+whole capture. `@jbrowse/img` renders in a single Node process and awaits its
+own promises: a real fetch error throws, and a resolved render means the data
+landed, so the race below is specific to `capture`.
+
+Reading the result costs the same image tokens for either tool, and a wrong
+refName or empty region resolves cleanly either way — a valid, contentless
+image, the same config-validates-but-shows-nothing class from the top of this
+doc. `@jbrowse/img` saves machinery and timing; reading what actually rendered
+is a manual step both tools share equally.
+
 ```bash
-npx @jbrowse/img --hub hg38 --track hg38-ncbiRefSeqCurated --loc BRCA1 --out out.png
-npx @jbrowse/capture --hub hg38 --track hg38-ncbiRefSeqCurated --loc BRCA1 -o out.png
+npx @jbrowse/img --genome hg38 --track hg38-ncbiRefSeqCurated --loc BRCA1 --out out.png
+npx @jbrowse/capture --genome hg38 --track hg38-ncbiRefSeqCurated --loc BRCA1 -o out.png
 ```
 
-Both take `--hub` (a hosted assembly), `--config <url>`, `--loc` (locstring, or a
-gene name where the config has a text index), and repeatable `--track`.
-`npx @jbrowse/capture --help` for the rest; `--session <file.json>` takes a whole
-session spec.
+Both take `--genome` (a hosted assembly), `--config <url>`, `--loc` (locstring,
+or a gene name where the config has a text index), repeatable `--track` with
+settings after it (`--track ncbiRefSeqCurated height:200`), and `--view`
+settings (`--view axis.grid=false`): one grammar, `@jbrowse/launch-args`. Both
+take a session spec as `--spec <file.json>`, and `--session <file.json>` opens a
+session saved with File → Export session. `npx @jbrowse/capture --help` for the
+rest.
+
+## Where the app comes from
+
+`@jbrowse/img` needs none — it renders server-side, and a config using
+`localPath` locations makes a figure out of files on disk with nothing served.
+
+`@jbrowse/capture` drives the **public** build of its own release,
+`jbrowse.org/code/jb2/v<version>/`, so a config and its data must be URLs that
+page may fetch; a path on disk is not one. For local data, serve the app and the
+data from one directory and point capture at it:
+
+```bash
+jbrowse create jbrowse2
+jbrowse add-track sample.bam --load copy --out jbrowse2   # trackId = "sample"
+npx serve -S jbrowse2                                     # http://localhost:3000
+npx @jbrowse/capture --instance http://localhost:3000 \
+  --config http://localhost:3000/config.json --assembly hg38 \
+  --loc chr17:43,044,000-43,126,000 --track sample -o out.png
+```
+
+Same origin for app and data, so CORS is not a question. The server must honor
+`Range`: `npx serve` answers `206`, `python3 -m http.server` ignores the header
+and returns the whole file with `200`.
 
 ## The one thing that goes wrong
 
-**Every readiness signal JBrowse publishes is negative** — no loading overlay, no
-display in its loading phase, no unpainted canvas — so all of them pass on a page
-whose app has not started yet. The order of events is:
+**Every readiness signal JBrowse publishes is negative** — no loading overlay,
+no display in its loading phase, no unpainted canvas — so all of them pass on a
+page whose app has not started yet. The order of events is:
 
 ```
 navigation resolves -> session exists -> assembly and tracks land -> loading overlay goes up -> displays draw
@@ -56,17 +95,21 @@ browser. `networkidle` does not help: it fires before the session is built, and
 an app streaming track data may never go idle.
 
 If you are writing your own Puppeteer script rather than using the CLI, the fix
-is a **positive gate** first — jbrowse-web publishes its live session model as
-`window.JBrowseSession`:
+is a **positive gate** first — jbrowse-web publishes what is open as a census on
+a hidden `[data-app-tracks]` element:
 
 ```js
 await page.waitForFunction(
   (assembly, trackIds) => {
-    const views = window.JBrowseSession?.views
-    if (!views?.length || views.some(v => v.initialized === false)) return false
-    if (!views.some(v => (v.assemblyNames ?? []).includes(assembly))) return false
-    const open = new Set(views.flatMap(v => v.tracks.map(t => t.configuration.trackId)))
-    return trackIds.every(id => open.has(id))
+    const census = document.querySelector('[data-app-tracks]')
+    if (!census) return false
+    const open = JSON.parse(census.dataset.appTracks)
+    const assemblies = JSON.parse(census.dataset.appAssemblies)
+    return (
+      Number(census.dataset.appViews) > 0 &&
+      assemblies.includes(assembly) &&
+      trackIds.every(id => open.includes(id))
+    )
   },
   { timeout: 60000, polling: 250 },
   'hg38',
@@ -80,13 +123,13 @@ name all fail there and nowhere else.
 Then the negative signals, in this order — each is only meaningful once the
 previous has passed:
 
-| Wait until absent | Means |
-| --- | --- |
-| `[data-view-phase="loading"]` | no view still resolving its assembly (until then it has mounted no displays and every row below is silent) |
-| `[data-view-component-pending]` | no view still waiting on its lazy React component |
-| `[data-testid="loading-overlay"]` | no track still fetching |
-| `[data-display-phase="loading"]` | no display still in its own fetch |
-| `[data-display-drawn="false"]` | every display has painted — flips on FIRST paint, so it proves nothing until the fetch rows above have cleared |
+| Wait until absent                 | Means                                                                                                          |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `[data-view-phase="loading"]`     | no view still resolving its assembly (until then it has mounted no displays and every row below is silent)     |
+| `[data-view-component-pending]`   | no view still waiting on its lazy React component                                                              |
+| `[data-testid="loading-overlay"]` | no track still fetching                                                                                        |
+| `[data-display-phase="loading"]`  | no display still in its own fetch (`canceled` is finished; the capture census fails on it rather than waiting) |
+| `[data-display-drawn="false"]`    | every display has painted — flips on FIRST paint, so it proves nothing until the fetch rows above have cleared |
 
 These attributes are absent on older deployments, which publish only the loading
 overlay; there the display rows are unfalsifiable rather than satisfied, and a
@@ -97,43 +140,70 @@ bounded settle is all you have.
 `@jbrowse/capture` is all of the above, done:
 
 ```js
-import { captureJBrowse, openJBrowse, waitForJBrowseReady } from '@jbrowse/capture'
+import {
+  captureJBrowse,
+  openJBrowse,
+  waitForAppSettled,
+  waitForJBrowseReady,
+} from '@jbrowse/capture'
 
 // launch, wait, shoot, close
-const { pending, paintContract } = await captureJBrowse({
-  hub: 'hg38',
+const { unsettled, tooLarge } = await captureJBrowse({
+  genome: 'hg38',
   loc: 'BRCA1',
   tracks: ['hg38-ncbiRefSeqCurated'],
   out: 'brca1.png',
 })
 
-// or keep the page to interact with it
-const { browser, page } = await openJBrowse({ hub: 'mm39', loc: 'Sox2' })
-await page.click('[data-testid="track_menu_icon"]')
-await page.screenshot({ path: 'menu.png' })
+// or keep the page and drive it: it publishes window.jb, the helper library
+// Desktop's MCP run_javascript uses, so the agents_live_model recipes apply
+const { browser, page } = await openJBrowse({ genome: 'mm39', loc: 'Sox2' })
+const report = await page.evaluate(() =>
+  jb.trackModel('mm39-ncbiRefSeqGff').applyDisplaySettings({ height: 250 }),
+)
+await waitForAppSettled(page)
+await page.screenshot({ path: 'taller.png' })
 await browser.close()
 ```
 
-`waitForJBrowseReady(page)` is the wait alone, for a page you navigated yourself.
+Iterating this way costs a page evaluate per change; rerunning the CLI costs a
+browser launch and a full app load each time.
+
+`waitForJBrowseReady(page)` is the wait alone, for a page you navigated
+yourself. For a page of your own that embeds a JBrowse component, open it in
+`launchBrowser()` and wait with the same call.
 
 **A stage that times out throws** rather than handing back a half-drawn frame,
 naming which gate it was. Pass `allowUnsettled` / `--allowUnsettled` if you
 actually want the frame as it stands.
 
-**Read the return fields before trusting the image.** `unsettled` lists stages
-that timed out; `pending` lists displays still unpainted at capture time;
-`paintContract` is false when the build could not report that at all, so an
-empty `pending` there means "cannot tell", not "all done".
+**Read the return fields before trusting the image.** On the command line
+`--json` prints them. `session` is `jb.sessionSummary()`: the visible region a
+gene name landed on, and each track's display, height and any phase, error or
+notice. `unsettled` says what did not settle, and is empty unless you passed
+`allowUnsettled`; `pending` lists the displays not showing their data at capture
+time, each with its phase; `tooLarge` lists the displays showing "too much data"
+in place of their features, which is no failure but is not the picture either.
 
 ## Practical
 
 - Headless Chromium rasterizes in **software**. A view that is slow or dies on
   volume there may be fine on real hardware — do not write a product limit into
   a comment on that basis.
-- In a container, pass `--no-sandbox` (the library already does).
-- `--scale 2` is the default and is what a figure wants; `--scale 1` for a
+- In a container, nothing to pass: the library already launches Chromium with
+  `--no-sandbox`.
+- `--dpr 2` is the default and is what a figure wants; `--dpr 1` for a
   screenshot you only intend to read.
-- Raise `--timeout` for a slow remote file, `--settle` for the last repaint.
+- Raise `--timeout` for a slow remote file.
+- A track that shows "Region too large to render" or "Requested too much data"
+  is over its byte gate, common for ClinVar or reads over a whole gene. Add
+  `force:true` after its `--track`, or set `"forceLoad": true` on its display in
+  the config.
+- In your own Puppeteer script, pass `captureBeyondViewport: false` to every
+  `page.screenshot`. Puppeteer's default resizes the page for a clipped shot,
+  JBrowse re-lays out, and the frame comes back empty with every readiness gate
+  green. Identical file sizes across loci are the tell, so view every capture (a
+  `montage` contact sheet) before trusting any of them.
 - Downscale before reading a large PNG:
   `convert out.png -resize 1400x /tmp/shot.png`.
 
@@ -141,5 +211,5 @@ empty `pending` there means "cannot tell", not "all done".
 
 - <https://jbrowse.org/jb2/docs/agents_capture.md>
 - <https://jbrowse.org/jb2/docs/jbrowse-img.md>
-- Related skills: `jbrowse-authoring` (write the config),
-  `jbrowse-hosted-data` (data to point it at)
+- Related skills: `jbrowse-authoring` (write the config), `jbrowse-hosted-data`
+  (data to point it at)

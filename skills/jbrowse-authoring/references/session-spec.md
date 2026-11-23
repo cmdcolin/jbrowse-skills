@@ -6,20 +6,22 @@ schemas by `pnpm autogen`. -->
 # The session spec
 
 One description of "what should be open", accepted through four different doors.
-Every door sets the same `init` object on a view, so what you learn once applies
+Every door takes the same view object, so what you learn once applies
 everywhere.
 
 Canonical docs: <https://jbrowse.org/jb2/docs/automating.md> and
 <https://jbrowse.org/jb2/docs/urlparams.md>.
 
-## `init` — what a view opens onto
+## What a view opens onto
+
+Every setting goes directly on the view object, on every door below.
 
 ```typescript
 {
   assembly: string          // required
   loc?: string              // 'chr1:1,000-2,000'; omit for a whole-genome view
   grow?: number             // pad around loc for context — 0.2 adds 20% each side
-  displayedRegionNames?: string[]  // with no loc, restrict + order the chromosomes
+  displayedRegionNames?: string[]  // with no loc, restrict + order the chromosomes; 'genome', '*_hap1' allowed
   tracks?: TrackInit[]      // tracks to open
   tracklist?: boolean       // open the track selector drawer (default false)
   nav?: boolean             // show the navigation header (default true)
@@ -41,8 +43,9 @@ A `TrackInit` is a `trackId` string, or an object that also sets initial state:
 live on the _display_, not the track, and a menu can't reach them before the
 view exists.
 
-`init` is applied once when the view attaches and then cleared. It is a launch
-instruction, not persistent state, so a saved session never carries it.
+These fields are applied once when the view attaches and then cleared. They are
+launch instructions rather than persistent state, so a saved session never
+carries them.
 
 ## Door 1 — `defaultSession` in a config file
 
@@ -53,8 +56,12 @@ instruction, not persistent state, so a saved session never carries it.
   "defaultSession": {
     "name": "demo",
     "views": [
-      { "type": "LinearGenomeView",
-        "init": { "assembly": "hg38", "loc": "chr1:1-100000", "tracks": ["my_track"] } }
+      {
+        "type": "LinearGenomeView",
+        "assembly": "hg38",
+        "loc": "chr1:1-100000",
+        "tracks": ["my_track"]
+      }
     ]
   }
 }
@@ -87,12 +94,11 @@ The JSON is the session, not the config:
 }
 ```
 
-Note the shape difference: on a **view spec** the `init` fields sit flat on the
-view, rather than nested under `init`. Top-level keys:
+Top-level keys:
 
 | key                 | meaning                                                                           |
 | ------------------- | --------------------------------------------------------------------------------- |
-| `views`             | the views to open; each needs `type`, plus the `init` fields flat                 |
+| `views`             | the views to open; each needs `type`, plus the fields above                       |
 | `sessionAssemblies` | assemblies defined by the spec itself — with these, no `config=` is needed at all |
 | `sessionTracks`     | tracks defined by the spec, for data not in the config                            |
 | `layout`            | workspace arrangement (see below)                                                 |
@@ -101,6 +107,12 @@ view, rather than nested under `init`. Top-level keys:
 `sessionAssemblies` + `sessionTracks` are what let a link carry data the hosted
 config has never heard of — the route for showing someone your own file on a
 public JBrowse instance.
+
+A `sessionTracks` entry can be `{ "trackId", "uri", "assemblyNames" }`, which
+keeps the link short — the type and adapter come from the file's extension.
+`assemblyNames` is required here: the implied assembly comes from a config
+file's own `assemblies`, and a session track with none gets an empty list and
+belongs to no assembly.
 
 Encoding is `spec-` + `encodeURIComponent(JSON.stringify(session))`.
 
@@ -139,8 +151,10 @@ spec's `views` array**, not ids:
 ```
 
 `direction` is `horizontal`, `vertical`, or `tabs` (stack into one tab group
-instead of splitting space). One real constraint: **`size` is honoured only on
-the top-level split, and only when every panel there carries one.** Nested sizes
-are dropped — dockview forces branch orientation to alternate by depth, so a
-nested container has no single branch to size against. JBrowse notifies rather
-than silently ignoring them.
+instead of splitting space). `children` nest, and **`size` applies at every
+depth** — a nested container takes a share of its parent and divides its own
+space among its children.
+
+`size` is a proportion, not a strict percentage: `7`/`3` and `70`/`30` are the
+same split. A panel left unsized takes an equal share of what the sized ones
+leave over, so `70` beside a bare panel is 70/30.

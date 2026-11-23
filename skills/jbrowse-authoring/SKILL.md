@@ -4,9 +4,11 @@ description:
   Use when authoring a JBrowse 2 config.json, session, or track from scratch —
   including fetching and indexing the data files first — or when asked to
   build/show/open a genome-browser view of some data, add a track, set up a
-  demo, or check that a JBrowse config is correct. Covers the config shape, the
-  session spec, and a validator that catches the config errors JBrowse itself
-  accepts silently.
+  demo, or check that a JBrowse config is correct; also when setting how a track
+  is drawn, such as coloring by a field, faceting or splitting rows by a sample
+  attribute, filtering, or plotting a file's column (LinearMarkDisplay, the
+  grammar of graphics). Covers the config shape, the session spec, and a
+  validator that catches the config errors JBrowse itself accepts silently.
 ---
 
 # Authoring JBrowse sessions
@@ -56,7 +58,8 @@ browser, `@jbrowse/capture` drives a real one and knows when it has finished.
         "type": "ReferenceSequenceTrack",
         "trackId": "hg38-ref",
         "adapter": { "type": "BgzipFastaAdapter", "uri": "hg38.fa.gz" }
-      }
+      },
+      "geneticCodes": { "chrM": 2 }
     }
   ],
   "tracks": [
@@ -73,11 +76,9 @@ browser, `@jbrowse/capture` drives a real one and knows when it has finished.
     "views": [
       {
         "type": "LinearGenomeView",
-        "init": {
-          "assembly": "hg38",
-          "loc": "chr1:1-100000",
-          "tracks": ["sample_bam"]
-        }
+        "assembly": "hg38",
+        "loc": "chr1:1-100000",
+        "tracks": ["sample_bam"]
       }
     ]
   }
@@ -92,9 +93,15 @@ Four things carry all the weight:
   location slot, and it derives the index location too (`sample.bam` →
   `sample.bam.bai`). Use it. `references/config-types.md` marks which adapters
   take it.
-- **`defaultSession.views[].init`** is what makes the config open onto something
-  instead of an empty browser. Same fields whether they arrive via config, URL,
-  or embedded props — see `references/session-spec.md`.
+- **A whole track can be `{ "trackId", "uri", "assemblyNames" }`**: the type and
+  adapter come from the extension and `name` from the file name, and where the
+  config declares exactly one assembly the track need not name it either. Write
+  a key beside `uri` to override any of them. Reach for the full form when the
+  extension is ambiguous or the file needs a slot the guess cannot set.
+- **A view in `defaultSession.views`** is what makes the config open onto
+  something instead of an empty browser. Every setting goes directly on the view
+  object, the same fields whether they arrive via config, URL, or embedded props
+  — see `references/session-spec.md`.
 - **Relative `uri`s resolve against the config file's location**, so a config
   next to its data files just works.
 
@@ -117,12 +124,22 @@ That is the single most common way an authored config is wrong, and the only
 symptom is "it rendered but not how I asked". The validator's error/warning
 split is drawn on exactly this line:
 
-|             | meaning                                                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **error**   | JBrowse accepts it and silently does the wrong thing — unknown slot, dangling `trackId`/assembly reference, duplicate `trackId` |
-| **warning** | JBrowse will tell you itself on load — unknown type name, legacy key a migration rewrites                                       |
+|             | meaning                                                                                                                                                                                                                       |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **error**   | JBrowse silently does the wrong thing, or refuses to load it — unknown slot, a key a `defaultSession` view or display does not declare, dangling `trackId`/assembly reference, duplicate `trackId`, a mark that draws nothing |
+| **warning** | JBrowse will tell you itself on load — unknown type name, legacy key a migration rewrites, a mark display slot left unread                                                                                                    |
 
 So: fix every error. Read the warnings and decide.
+
+A `LinearMarkDisplay` is the one type whose slots disagree with each other
+rather than with the schema: a `marks` list loads whenever its keys and value
+types are right, and the app says what it cannot draw in a corner notice rather
+than refusing the track; `jb2export` prints the same problems and fails on the
+errors among them. The validator runs that same rule list over the file — a bar
+or point naming no `y`, a channel the mark does not read, a `y` no step writes,
+a zoom range that admits no zoom — so a marks config is worth validating even
+when you are sure of the slot names. `--json` carries each finding's stable
+`rule` id.
 
 Types registered by a **plugin** aren't in the manifest, so they surface as
 unknown-type warnings — expected, not a problem. Legacy type names a current
@@ -130,13 +147,10 @@ type still answers to (`LinearPileupDisplay`, `LinearFeatureDisplay`) are
 resolved through their `aliases` and checked against the type that absorbed
 them, so those are not flagged.
 
-The slot manifest it checks against is generated from the live schemas and rides
-`pnpm autogen`, so it can't drift from a schema change on main. Working in the
-monorepo and just edited a `configSchema.ts`? Regenerate it:
-
-```bash
-node --experimental-strip-types scripts/generateConfigManifest.ts
-```
+The validator checks against the slots of the `@jbrowse/cli` version installed,
+so match it to the JBrowse version that will open the config. (Inside the
+jbrowse-components repo, `pnpm autogen` regenerates the manifest after a
+`configSchema.ts` edit.)
 
 ## Looking things up
 
@@ -144,12 +158,99 @@ Don't guess slot names — the whole point of the validator is that guesses fail
 silently, and this is cheaper than a round trip through it.
 
 1. `references/config-types.md` — every track, display, and adapter type the
-   core plugins register, one line each. Start here to pick a type.
+   core plugins register, one line each. Start here to pick a type. Starting
+   from a **file** rather than a type instead?
+   `https://jbrowse.org/jb2/docs/config_guides/file_types.md` is format →
+   adapter → track type per row, including the notes that decide between two
+   adapters for one format.
 2. Then fetch that type's page for its slots:
    `https://jbrowse.org/jb2/docs/config/<lowercased type name>.md` (a few
    hundred tokens each). The index links them.
-3. `https://jbrowse.org/jb2/docs/llms.txt` indexes the rest of the docs if you
-   need concepts rather than slots.
+3. `https://jbrowse.org/jb2/llms.txt` indexes the rest of the docs if you need
+   concepts rather than slots.
+
+## Plotting a file's fields
+
+JBrowse has a grammar of graphics, in the sense of ggplot2 and Vega-Lite, and
+every display speaks part of it with the same names. Reach for it before a
+plugin or a precomputed image whenever the ask is "color by", "split by", "plot
+this column" or "one row per sample".
+
+- **The shared settings** are `encoding.color` (a field through a scale,
+  `{ "field": "strand", "scale": { "type": "ordinal" } }`, or a constant
+  `{ "value": "green" }`), `facet` (a band of rows per value), `rows` (what a
+  row is, its order, labels and colors) and `filter` (a list of predicates or
+  `jexl:` expressions). Not every display takes every one: check the display's
+  `config/<type>.md` page (LinearBasicDisplay has no `rows`, LinearWiggleDisplay
+  no `facet` or `filter`).
+- **`displayDefaults` sends each setting to every display of the track that
+  declares it, but the track opens on its first display**, so a setting only a
+  later display takes loads, validates, and changes nothing on screen. Write the
+  track's `type` whenever you set `displayDefaults`: on a bare-`uri` track the
+  validator does not check those keys, so a misspelt one passes.
+- **A field** is a feature attribute (`score`, a BED `columnNames` column, a GFF
+  attribute), a dotted path (`INFO.SVTYPE`), or a `jexl:` expression over
+  `feature` where no field holds the value.
+- **On the multi-sample displays (variant, multi-wiggle, MAF) a row is a
+  sample**, so `facet`, `rows.color` and `rows.filter` read sample attributes:
+  the columns of the adapter's `samplesTsvLocation` TSV, keyed by sample name.
+  That needs the full `adapter` form:
+
+```json
+{
+  "type": "VariantTrack",
+  "trackId": "sv",
+  "assemblyNames": ["hg38"],
+  "adapter": {
+    "type": "VcfTabixAdapter",
+    "uri": "sv.vcf.gz",
+    "samplesTsvLocation": { "uri": "samples.tsv" }
+  },
+  "displayDefaults": {
+    "encoding": { "color": { "field": "INFO.SVTYPE" } },
+    "facet": "population"
+  }
+}
+```
+
+- **`LinearMarkDisplay`** is the whole grammar, on a feature, alignments,
+  variant or quantitative track. Its `marks` are layers, each a `bar`, `point`,
+  `rule`, `line`, `rect`, `text` or `link` with an `encoding`; its `transform`
+  steps (`bin`, `aggregate`, `pileup`, `coverage`, `formula`, `filter` and more)
+  compute fields on the way in; and it takes `facet` and `rows`. To open on it,
+  list it first in a `displays` entry, which needs the track's `type`. A BED
+  score as bars colored by strand:
+
+```json
+{
+  "type": "FeatureTrack",
+  "trackId": "scores",
+  "uri": "scores.bed.gz",
+  "assemblyNames": ["hg38"],
+  "displays": [
+    {
+      "type": "LinearMarkDisplay",
+      "displayId": "scores-LinearMarkDisplay",
+      "marks": [
+        {
+          "mark": "bar",
+          "encoding": {
+            "y": "score",
+            "color": { "field": "strand", "scale": { "type": "ordinal" } }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Read `https://jbrowse.org/jb2/docs/config_guides/mark_display.md` before writing
+`marks`: it maps each ggplot2 and Vega-Lite idea to this display's spelling, and
+lists the rule ids the validator reports for a mark that cannot draw. A
+display's own page (`config/<type>.md`) says which shared settings it takes. In
+the running app, **Advanced → Edit plot...** in the track menu shows a display's
+plot as text, a quick way to read back a setting you made from a menu.
 
 ## Opening what you authored
 
@@ -183,7 +284,7 @@ without it.
 
 - **A track referencing an assembly that isn't defined** loads and then fails to
   display, with no obvious error. The validator checks this.
-- **`init.tracks` naming a `trackId` that doesn't exist** silently opens
+- **A view's `tracks` naming a `trackId` that doesn't exist** silently opens
   nothing. Also checked.
 - **Duplicate `trackId`** — the later one wins, quietly.
 - **A config that loads fine can still show an empty track**, when the file is
